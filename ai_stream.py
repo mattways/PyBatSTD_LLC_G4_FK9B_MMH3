@@ -2,200 +2,185 @@ import os
 import re
 import time
 import requests
-import random
+import json
 import threading
 import torch
 import io
 import soundfile as sf
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
-torch.backends.cuda.enable_math_sdp(False)
-device = torch.device("cuda")
-
 from f5_tts.api import F5TTS
 from obswebsocket import obsws, requests as obs_req
 from pygame import mixer
 from flask import Flask, request, render_template_string
 
-OBS_HOST, OBS_PORT, OBS_PASSWORD, OBS_SCENE = "10.9.9.3", 4455, "omHJZMbXA4fT1OwH", "Scene"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+device = torch.device("cuda")
+
+OBS_HOST, OBS_PORT, OBS_PASSWORD, OBS_SCENE = "localhost", 4455, "", "Scene"
 CHARACTER_OBS_SOURCES = {"zhorik": "GIF_Zhorik", "vedushiy": "GIF_Vedushiy"}
 CHARACTER_ITEM_IDS = {"zhorik": None, "vedushiy": None}
-TOPIC_FILE = "topic.txt"
-AUTO_TOPICS = [
-    "Цены на бензин и огромные пробки в Пятигорске",
-    "Кто посмел украсть золотую цепочку у Рудика",
-    "Why заниженная Приора в сто раз лучше любого Мерседеса",
-    "Тонировка в круг — это по закону или чисто по кайфу?",
-    "Куда пропала самая лучшая шаурма на всем Кавказе",
-    "Почему Жорик опять умудрился опоздать на прямой эфир",
-    "Прогноз погоды: почему в Пятигорске всегда дикая жара, жи есть",
-    "Новый Айфон за миллион рублей — стоит ли брать кредит на сто лет"
-]
-
-if not os.path.exists(TOPIC_FILE):
-    with open(TOPIC_FILE, "w", encoding="utf-8") as f: f.write(AUTO_TOPICS[0])
 
 mixer.init()
 app = Flask(__name__)
-web_new_topic = None
+
+CURRENT_TOPIC = "Срочный экстренный эфир Сев-Кав ТВ"
+TOPIC_LOCK = threading.Lock()
 
 HTML_PAGE = """
-<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Сев-Кав ТВ</title>
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Сев-Кав ТВ</title>
 <style>body{font-family:sans-serif;background:#121214;color:#fff;text-align:center;padding:40px 20px;}
 .card{background:#1a1a1e;max-width:500px;margin:0 auto;padding:30px;border-radius:16px;border:1px solid #2d2d35;}
 h1{color:#ff4757;}input[type="text"]{width:100%;padding:14px;background:#25252b;border:2px solid #3d3d48;border-radius:8px;color:#fff;box-sizing:border-box;}
 button{background:#ff4757;color:#fff;border:none;padding:14px;border-radius:8px;cursor:pointer;width:100%;font-weight:bold;margin-top:15px;}</style></head>
-<body><div class="card"><h1>Сев-Кав ТВ 🎥</h1><form method="POST" action="/"><input type="text" name="topic" placeholder="Новая тема..." required autocomplete="off"><button type="submit">ВБРОСИТЬ⚡</button></form></div></body></html>
+<body><div class="card"><h1>Сев-Кав ТВ 🎥</h1><form method="POST" action="/"><input type="text" name="topic" placeholder="Какой бред вбросим?..." required autocomplete="off"><button type="submit">ВБРОСИТЬ⚡</button></form></div></body></html>
 """
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    global web_new_topic
+    global CURRENT_TOPIC
     if request.method == "POST":
         t_text = request.form.get("topic", "").strip()
-        if t_text: web_new_topic = t_text
+        if t_text:
+            with TOPIC_LOCK:
+                CURRENT_TOPIC = t_text
     return render_template_string(HTML_PAGE)
 
-def run_web_server():
-    import logging
-    logging.getLogger('werkzeug').setLevel(logging.ERROR)
-    app.run(host="127.0.0.1", port=5000, threaded=True)
+threading.Thread(target=lambda: app.run(host="localhost", port=5000, threaded=True), daemon=True).start()
 
-threading.Thread(target=run_web_server, daemon=True).start()
-
-try:
-    ws = obsws(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD)
-    ws.connect()
-except: exit(1)
-
+ws = obsws(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD)
+ws.connect()
 for char_id, source_name in CHARACTER_OBS_SOURCES.items():
-    try: CHARACTER_ITEM_IDS[char_id] = ws.call(obs_req.GetSceneItemId(sceneName=OBS_SCENE, sourceName=source_name)).getSceneItemId()
-    except: pass
+    CHARACTER_ITEM_IDS[char_id] = ws.call(obs_req.GetSceneItemId(sceneName=OBS_SCENE, sourceName=source_name)).getSceneItemId()
 
-try:
-    f5tts = F5TTS()
-    if hasattr(f5tts, 'model'): f5tts.model = f5tts.model.to(device)
-except: ws.disconnect(); exit(1)
+# Чистая инициализация F5TTS без ломающих try/except и exit(1)
+f5tts = F5TTS()
 
-def load_reference_text(char_id):
-    txt_path = f"characters/{char_id}/sample.txt"
-    if os.path.exists(txt_path):
-        with open(txt_path, "r", encoding="utf-8") as f: return f.read().strip()
-    return ""
+def load_ref(char_id):
+    p = f"characters/{char_id}/sample.txt"
+    return open(p, "r", encoding="utf-8").read().strip() if os.path.exists(p) else ""
 
-REF_TEXTS = {"zhorik": load_reference_text("zhorik"), "vedushiy": load_reference_text("vedushiy")}
+REF_TEXTS = {"zhorik": load_ref("zhorik"), "vedushiy": load_ref("vedushiy")}
 
-def check_for_new_topic(current_topic, start_time, duration=100):
-    global web_new_topic
-    if web_new_topic is not None:
-        sel = web_new_topic; web_new_topic = None
-        try:
-            with open(TOPIC_FILE, "w", encoding="utf-8") as f: f.write(sel)
-        except: pass
-        return sel, time.time(), True
-    try:
-        if os.path.exists(TOPIC_FILE):
-            with open(TOPIC_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content and content != current_topic: return content, time.time(), True
-    except: pass
-    if time.time() - start_time > duration:
-        new_t = random.choice([t for t in AUTO_TOPICS if t != current_topic])
-        try:
-            with open(TOPIC_FILE, "w", encoding="utf-8") as f: f.write(new_t)
-        except: pass
-        return new_t, time.time(), True
-    return current_topic, start_time, False
-
-def toggle_obs_source(character_id, is_speaking):
+def toggle_obs(character_id, enabled):
     item_id = CHARACTER_ITEM_IDS.get(character_id)
     if item_id is not None:
-        try: ws.call(obs_req.SetSceneItemEnabled(sceneName=OBS_SCENE, sceneItemId=item_id, sceneItemEnabled=is_speaking))
-        except: pass
-
-def generate_gemma_text(character_id, chat_history, current_topic, is_new_topic=False):
-    instr = f"Тема изменилась на: '{current_topic}'. Срочно начни дикий ор!" if is_new_topic else f"Спор по теме: '{current_topic}'."
-    if character_id == "zhorik":
-        role = "Ты Жорик Вартанов телеведущий телеканала постоянно врешь в эфире пытаешься говорить неправду и споришь с опонентом гостем в эфире ты очень злой самодостаточный кавсказский мужчина и против каких либо запретов обожаешь жить по кайфу матерись часто не жестко но сразу же говори тысячи извинений мы в эфире после этого"
-    else:
-        role = "Ты Доктор Наук гость в эфире телеканала Ты взбешен и НЕНАВИДИШЬ ведущего Жорика! Оскорбляй его за тупость, называй бараном, угрожай разбить лицо в эфире или пожаловаться в ментовку. Требуй закрыть рот и вести себя вежлево."
-    
-    sys_p = f"{role} Отвечай ОЧЕНЬ коротко (2 предложения), агрессивно, харизматично. Пиши иностранные названия русскими буквами. ЗАПРЕЩЕНО думать и выдавать теги мыслей в финальный ответ! КРИТИЧЕСКОЕ ПРАВИЛО: Тебе ЗАПРЕЩЕНО соглашаться, поддакивать или повторять слова и мысли оппонента! Переворачивай его слова против него самого! {instr}"
-    
-    messages = [{"role": "system", "content": sys_p}]
-    for speaker, text in chat_history[-5:]:
-        role_type = "assistant" if speaker == character_id else "user"
-        messages.append({"role": role_type, "content": text})
-        
-    try:
-        res = requests.post(
-            "http://localhost:8080/v1/chat/completions", 
-            json={
-                "messages": messages, 
-                "temperature": 1.0, 
-                "top_p": 0.95,
-                "top_k": 64,
-                "max_tokens": 64,
-                "stream": False
-            }, 
-            timeout=15
-        )
-        if res.status_code != 200: return "Слушай, связь барахлит, жи есть!"
-        raw = res.json()['choices'][0]['message']['content']
-        
-        # Точная очистка специфичных токенов рассуждения Gemma 4 E2B
-        clean = re.sub(r'<\|channel\|>thought.*?<channel\|>|<\|channel>thought.*?<channel\|>|<think>.*?</think>|<\|think\|>', '', raw, flags=re.DOTALL)
-        return clean.replace("<||channel>thought", "").replace("<|channel>thought", "").replace("<channel|>", "").replace('\\n', '\n').replace('\\"', '"').strip()
-    except: return "Э, ты чё несешь, жи есть!"
+        ws.call(obs_req.SetSceneItemEnabled(sceneName=OBS_SCENE, sceneItemId=item_id, sceneItemEnabled=enabled))
 
 def generate_voice_f5_fast(text, character_id):
     aud = f"characters/{character_id}/sample.wav"
     r_txt = REF_TEXTS.get(character_id, "")
     if not os.path.exists(aud) or not r_txt: return None
     with torch.no_grad():
-        res_audio, sample_rate, _ = f5tts.infer(ref_file=aud, ref_text=r_txt, gen_text=text, nfe_step=6)
-    audio_np = res_audio.cpu().numpy() if torch.is_tensor(res_audio) else res_audio
+        res_audio, sample_rate, _ = f5tts.infer(ref_file=aud, ref_text=r_txt, gen_text=text, nfe_step=16)
     audio_buffer = io.BytesIO()
-    sf.write(audio_buffer, audio_np, sample_rate, format='WAV')
+    sf.write(audio_buffer, res_audio.cpu().numpy() if torch.is_tensor(res_audio) else res_audio, sample_rate, format='WAV')
     audio_buffer.seek(0)
     torch.cuda.empty_cache()
     return audio_buffer
 
-def execute_step(character_id, real_name, chat_history, topic, is_new):
-    text = generate_gemma_text(character_id, chat_history, topic, is_new)
-    print(f"\n💬 [{real_name}]: {text}")
-    audio_stream = generate_voice_f5_fast(text, character_id)
-    if audio_stream:
-        toggle_obs_source(character_id, True)
-        mixer.music.load(audio_stream, "wav")
-        mixer.music.play()
-        while mixer.music.get_busy(): time.sleep(0.05)
-        toggle_obs_source(character_id, False)
-    return text
+def clean_gemma_tags(text):
+    return re.sub(r'<think>.*?</think>|<\|think\|>|.*?<\/think>|<\|channel\|>thought.*?<channel\|>', '', text, flags=re.DOTALL).strip()
+
+def stream_sentences_from_gemma(character_id, chat_history, current_topic):
+    if character_id == "zhorik":
+        role = (
+            f"Ты — Жорик Вартанов, легендарный ведущий Сев-Кав ТВ (Пятигорск). Твой стиль: уличный кавказский колорит, крики, слова 'Уася', 'жи есть'. "
+            f"СЕЙЧАС В ЭФИР ПРИШЕЛ ВБРОС: '{current_topic}'. Твоя задача: взять эту фразу, раскрутить из нее полнейший, абсурдный кавказский бред "
+            f"и агрессивно доказывать свою безумную правоту гостю. Если начинаешь дико орать, СРАЗУ ГОВОРИ: "
+            f"'Тысяча извинений, Эдуард Аристархович, мы же в прямом эфире, жи есть!' и продолжай спор."
+        )
+    else:
+        role = (
+            f"Ты — Доктор Наук (Эдуард Аристархович), интеллигентный, но смертельно взбешенный профессор СКФУ. Твой стиль: заумный, академический язык ('деструктивный дискурс'). "
+            f"Ты считаешь Жорика абсолютным дикарем. ТВОЕ ГЛАВНОЕ ПРАВИЛО: Ты обязан жестко БЫКОВАТЬ на Жорика, максимально изысканно, высокомерно "
+            f"и агрессивно оскорблять его интеллект за тот бред, который он сочиняет вокруг темы '{current_topic}'! "
+            f"Ставь его на место жесткими фразами типа: 'Вы, Жора, продукт интеллектуальной стагнации! Закройте свой рот!'."
+        )
+    
+    sys_p = f"{role} Отвечай ОЧЕНЬ коротко (2 предложения), агрессивно, харизматично. Пиши иностранные названия русскими буквами. ЗАПРЕЩЕНО думать и выдавать теги мыслей в финальный ответ! КРИТИЧЕСКОЕ ПРАВИЛО: Тебе ЗАПРЕЩЕНО соглашаться, поддакивать или повторять слова и мысли оппонента! Переворачивай его слова против него самого!"
+    messages = [{"role": "system", "content": sys_p}]
+    for speaker, text in chat_history[-4:]:
+        messages.append({"role": "assistant" if speaker == character_id else "user", "content": text})
+        
+    try:
+        res = requests.post(
+            "http://localhost:8080/v1/chat/completions", 
+            json={"messages": messages, "max_tokens": 140, "stream": True}, 
+            stream=True, 
+            timeout=10
+        )
+        if res.status_code != 200:
+            yield "Связь барахлит, жи есть!"
+            return
+
+        buffer = ""
+        sentence_endings = re.compile(r'([^.!?]*[.!?])')
+        for line in res.iter_lines():
+            if not line: continue
+            line_str = line.decode('utf-8').strip()
+            if line_str.startswith("data:"):
+                data_content = line_str[5:].strip()
+                if data_content == "[DONE]": break
+                try:
+                    chunk = json.loads(data_content)
+                    delta = chunk['choices'][0].get('delta', {})
+                    if 'content' in delta:
+                        buffer += delta['content']
+                        while True:
+                            match = sentence_endings.match(buffer)
+                            if not match: break
+                            ready_part = match.group(1).strip()
+                            buffer = buffer[match.end():]
+                            clean_part = clean_gemma_tags(ready_part)
+                            if len(clean_part) > 5: yield clean_part
+                except: pass
+        final_part = clean_gemma_tags(buffer)
+        if len(final_part) > 5: yield final_part
+    except:
+        yield "Э, ты чё несешь, жи есть!"
+
+def execute_step(character_id, real_name, chat_history):
+    with TOPIC_LOCK:
+        topic = CURRENT_TOPIC
+    print(f"\n🎙️ [{real_name}] (Вброс: {topic}) начинает генерацию...", end="", flush=True)
+    full_reply = []
+    for sentence in stream_sentences_from_gemma(character_id, chat_history, topic):
+        if not sentence: continue
+        print(f"\n  ↳ Сгенерирован чанк: \"{sentence}\" -> Синтез аудио...")
+        full_reply.append(sentence)
+        audio_stream = generate_voice_f5_fast(sentence, character_id)
+        if audio_stream:
+            toggle_obs(character_id, True)
+            mixer.music.load(audio_stream, "wav")
+            mixer.music.play()
+            while mixer.music.get_busy(): time.sleep(0.07)
+            toggle_obs(character_id, False)
+    return " ".join(full_reply)
 
 try:
-    try: generate_voice_f5_fast("Тест", "zhorik")
-    except: pass
-    act_topic = "Цены на бензин и пробки в городе"
-    if os.path.exists(TOPIC_FILE):
-        with open(TOPIC_FILE, "r", encoding="utf-8") as f:
-            c = f.read().strip()
-            if c: act_topic = c
-    t_start = time.time()
-    hist = [("vedushiy", f"Эфир Сев-Кав ТВ начался. Жорик, у нас новая тема: {act_topic}. Чё ты скажешь на это?")]
+    generate_voice_f5_fast("Тест", "zhorik")
+    hist = [("vedushiy", f"Эфир Сев-Кав ТВ начался. Жорик, ну и какую ахинею ты собираешься нести сегодня?")]
+    
     while True:
-        act_topic, t_start, sw = check_for_new_topic(act_topic, t_start)
-        rep = execute_step("zhorik", "Жорик Вартанов", hist, act_topic, sw)
-        hist.append(("zhorik", rep))
-        time.sleep(0.5)
+        rep = execute_step("zhorik", "Жорик Вартанов", hist)
+        if rep.strip(): 
+            hist.append(("zhorik", rep))
+            try:
+                with open("stream_log.txt", "a", encoding="utf-8") as log_f:
+                    log_f.write(f"[{time.strftime('%H:%M:%S')}] ЖОРИК: {rep}\n")
+            except: pass
+        time.sleep(0.3)
         
-        act_topic, t_start, sw = check_for_new_topic(act_topic, t_start)
-        rep = execute_step("vedushiy", "Ведущий Сев-Кав ТВ", hist, act_topic, sw)
-        hist.append(("vedushiy", rep))
-        if len(hist) > 8: hist = hist[-6:]
-        time.sleep(0.5)
+        rep = execute_step("vedushiy", "Ведущий Сев-Кав ТВ", hist)
+        if rep.strip(): 
+            hist.append(("vedushiy", rep))
+            try:
+                with open("stream_log.txt", "a", encoding="utf-8") as log_f:
+                    log_f.write(f"[{time.strftime('%H:%M:%S')}] ДОКТОР: {rep}\n")
+            except: pass
+        
+        if len(hist) > 4: hist = hist[-2:]
+        time.sleep(0.7)
 except KeyboardInterrupt: pass
 finally:
     try: ws.disconnect()
