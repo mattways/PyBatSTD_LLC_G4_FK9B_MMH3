@@ -25,15 +25,15 @@ if "%m%"=="5" goto status
 goto menu
 
 :mode1
-set "MODEL=Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+set "MODEL=Gemma-4-E4B-it-Q4_K_M.gguf"
 set "DRAFT=mtp-gemma-4-E4B-it.gguf"
-set "MMPROJ=mmproj-F16.gguf"
+set "MMPROJ=mmproj-Gemma-4-E4B-it.gguf"
 if not exist "%MODEL%" goto missing
 if not exist "%DRAFT%" goto missing_draft
 if not exist "%MMPROJ%" goto missing_mmproj
 echo [INFO] Starting Gemma 4 4B
 start "" /min cmd /c "timeout /t 12 /nobreak >nul && start http://127.0.0.1:8080"
-llama-server.exe -lv 4 -t 4 -tb 4 -m "%MODEL%" --model-draft "%DRAFT%" -dev CUDA0,CUDA1 --spec-draft-device CUDA0 -sm layer --tensor-split 46,54 -ot "token_embd.weight=CUDA0" -ot "output.weight=CUDA0" --override-tensor-draft "token_embd.weight=CUDA0" --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 -ngl all --n-gpu-layers-draft all --no-host -lm none --cache-ram 0 -fit off -c 100000 -b 2048 -ub 1152 -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning on --reasoning-budget 3072 --temp 1.0 --top-p 0.95 --top-k 64 --host 127.0.0.1 --port 8080
+llama-server.exe -lv 4 -t 4 -tb 4 -m "%MODEL%" --mmproj "%MMPROJ%" -dev CUDA0 --spec-draft-device CUDA0 -sm none -ot ".+=CUDA0" --override-tensor-draft ".+=CUDA0" --spec-draft-p-min 0.75 -ngl all --n-gpu-layers-draft all --no-host -lm none --cache-ram 0 -fit off -c 32000 -b 2048 -ub 1152 -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning off --host 127.0.0.1 --port 8080
 goto end
 
 :mode2
@@ -45,7 +45,7 @@ if not exist "%DRAFT%" goto missing_draft
 if not exist "%MMPROJ%" goto missing_mmproj
 echo [INFO] Starting Gemma 4 12B
 start "" /min cmd /c "timeout /t 12 /nobreak >nul && start http://127.0.0.1:8080"
-llama-server.exe -lv 4 -t 4 -tb 4 -m "%MODEL%" --model-draft "%DRAFT%" -dev CUDA0,CUDA1 --spec-draft-device CUDA0 -sm layer --tensor-split 46,54 -ot "token_embd.weight=CUDA0" -ot "output.weight=CUDA0" --override-tensor-draft "token_embd.weight=CUDA0" --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 -ngl all --n-gpu-layers-draft all --no-host -lm none --cache-ram 0 -fit off -c 100000 -b 2048 -ub 1152 -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning on --reasoning-budget 3072 --temp 1.0 --top-p 0.95 --top-k 64 --host 127.0.0.1 --port 8080
+llama-server.exe -lv 4 -t 4 -tb 4 -m "%MODEL%" --model-draft "%DRAFT%" -dev CUDA0,CUDA1 --spec-draft-device CUDA0 -sm layer --tensor-split 46,54 -ot "token_embd.weight=CUDA0" -ot "output.weight=CUDA0" --override-tensor-draft "token_embd.weight=CUDA0" --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 -ngl all --n-gpu-layers-draft all --no-host -lm none --cache-ram 0 -fit off -c 64000 -b 2048 -ub 1152 -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning off --temp 1.0 --top-p 0.95 --top-k 64 --host 127.0.0.1 --port 8080
 goto end
 
 :mode3
@@ -55,7 +55,7 @@ if not exist "%MODEL%" goto missing
 if not exist "%DRAFT%" goto missing_draft
 echo [INFO] Starting Gemma 4 26B
 start "" /min cmd /c "timeout /t 12 /nobreak >nul && start http://127.0.0.1:8080"
-llama-server.exe -lv 4 -t 4 -tb 4 -m "%MODEL%" --model-draft "%DRAFT%" -dev CUDA0,CUDA1 --spec-draft-device CUDA0 -sm layer --tensor-split 46,54 -ot "token_embd.weight=CUDA0" -ot "output.weight=CUDA0" --override-tensor-draft "token_embd.weight=CUDA0" --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 -ngl all --n-gpu-layers-draft all --no-host -lm none --cache-ram 0 -fit off -c 12288 -b 2048 -ub 1152 -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning on --reasoning-budget 3072 --temp 1.0 --top-p 0.95 --top-k 64 --host 127.0.0.1 --port 8080
+llama-server.exe -lv 4 -t 4 -tb 4 -m "%MODEL%" --model-draft "%DRAFT%" -dev CUDA0,CUDA1 --spec-draft-device CUDA0 -sm layer --tensor-split 46,54 -ot "token_embd.weight=CUDA0" -ot "output.weight=CUDA0" --override-tensor-draft "token_embd.weight=CUDA0" --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 -ngl all --n-gpu-layers-draft all --no-host -lm none --cache-ram 0 -fit off -c 8000 -b 2048 -ub 1152 -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning on --temp 1.0 --top-p 0.95 --top-k 64 --host 127.0.0.1 --port 8080
 goto end
 
 :status
